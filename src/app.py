@@ -31,8 +31,8 @@ def handle_start_terminal():
     session_id = request.sid
     
     try:
-        # Create a subprocess for the console app
-        console_path = os.path.join(os.path.dirname(__file__), 'console_app.py')
+        # Create a subprocess for the multi-agent app
+        console_path = os.path.join(os.path.dirname(__file__), 'multi_agent', 'multi_agent_app.py')
         
         if platform.system() == "Windows":
             # Windows subprocess creation with unbuffered output
@@ -44,7 +44,10 @@ def handle_start_terminal():
                 text=True,
                 bufsize=0,
                 universal_newlines=True,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                env=dict(os.environ, PYTHONIOENCODING='utf-8')
             )
         else:
             # Unix-like systems
@@ -55,7 +58,10 @@ def handle_start_terminal():
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=0,
-                universal_newlines=True
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace',
+                env=dict(os.environ, PYTHONIOENCODING='utf-8')
             )
         
         # Store session info
@@ -174,4 +180,5 @@ def cleanup_session(session_id):
                 del sessions[session_id]
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
