@@ -2,25 +2,45 @@ document.addEventListener('DOMContentLoaded', function() {
     const socket = io();
     const term = new Terminal({
         cursorBlink: true,
-        fontFamily: '"Courier New", Consolas, Monaco, monospace',
         fontSize: 14,
-        fontWeight: 'normal',
-        fontWeightBold: 'bold',
-        lineHeight: 1.2,
-        letterSpacing: 0,
+        fontFamily: 'Cascadia Code, Cascadia Mono, Consolas, Courier New, monospace',
         theme: {
-            background: '#1a1a1a',
+            background: '#1e1e1e',
             foreground: '#ffffff',
             cursor: '#ffffff',
-            cursorAccent: '#000000',
-            selection: '#ffffff40'
+            black: '#1e1e1e',
+            red: '#f44747',
+            green: '#619955',
+            yellow: '#ffaf00',
+            blue: '#0a7aca',
+            magenta: '#b4009e',
+            cyan: '#00b7c3',
+            white: '#d4d4d4',
+            brightBlack: '#666666',
+            brightRed: '#f44747',
+            brightGreen: '#b5cea8',
+            brightYellow: '#ffef8b',
+            brightBlue: '#569cd6',
+            brightMagenta: '#d670d6',
+            brightCyan: '#9cdcfe',
+            brightWhite: '#ffffff'
         },
+        allowProposedApi: true,
+        unicode11: true,
+        letterSpacing: 0,
+        lineHeight: 1.2,
+        rendererType: 'canvas',  // Use canvas renderer for better Unicode support
+        fontWeight: 'normal',
+        fontWeightBold: 'bold',
         cols: 80,
         rows: 24
     });
     
     const fitAddon = new FitAddon.FitAddon();
+    const unicode11Addon = new window.Unicode11Addon.Unicode11Addon();
     term.loadAddon(fitAddon);
+    term.loadAddon(unicode11Addon);
+    term.unicode.activeVersion = '11';
     
     term.open(document.getElementById('terminal'));
     fitAddon.fit();
@@ -38,22 +58,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle terminal errors
     socket.on('terminal_error', function(data) {
         term.write('\r\n\x1b[31mError: ' + data.error + '\x1b[0m\r\n');
-    });
-      // Send input to server
+    });      // Send input to server
     term.onData(function(data) {
-        // Echo the input locally for immediate feedback
-        if (data === '\r') {
-            // Handle Enter key
-            term.write('\r\n');
-        } else if (data === '\u007f') {
-            // Handle Backspace
-            term.write('\b \b');
-        } else if (data >= ' ' || data === '\t') {
-            // Handle printable characters and tab
-            term.write(data);
-        }
-        
-        // Send to server
+        // Send to server - PTY will handle echoing
         socket.emit('terminal_input', {input: data});
     });
     

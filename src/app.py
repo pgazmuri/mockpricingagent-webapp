@@ -1,13 +1,11 @@
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 import os
-import subprocess
-import threading
-import queue
-import signal
 import sys
 import platform
-import time
+import queue
+import threading
+from terminal_backend import PTYProcess
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
@@ -29,87 +27,60 @@ def terminal():
 @socketio.on('start_terminal')
 def handle_start_terminal():
     session_id = request.sid
-    
     try:
-        # Create a subprocess for the multi-agent app
         console_path = os.path.join(os.path.dirname(__file__), 'multi_agent', 'multi_agent_app.py')
-        
-        if platform.system() == "Windows":
-            # Windows subprocess creation with unbuffered output
-            process = subprocess.Popen(
-                [sys.executable, '-u', console_path],  # -u for unbuffered
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=0,
-                universal_newlines=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                env=dict(os.environ, PYTHONIOENCODING='utf-8')
-            )
-        else:
-            # Unix-like systems
-            process = subprocess.Popen(
-                [sys.executable, '-u', console_path],  # -u for unbuffered
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=0,
-                universal_newlines=True,
-                encoding='utf-8',
-                errors='replace',
-                env=dict(os.environ, PYTHONIOENCODING='utf-8')
-            )
-        
-        # Store session info
+        argv = [sys.executable, '-u', console_path]
+        ptyproc = PTYProcess(argv, cols=80, rows=24)
         sessions[session_id] = {
-            'process': process,
+            'proc': ptyproc,
             'output_queue': queue.Queue(),
             'running': True
         }
-        
-        # Start output reader thread
         threading.Thread(
             target=read_output,
-            args=(session_id, process.stdout),
+            args=(session_id,),
             daemon=True
         ).start()
-        
-        # Start output sender thread
         threading.Thread(
             target=send_output,
             args=(session_id,),
             daemon=True
         ).start()
-        
         emit('terminal_ready', {'status': 'ready'})
-        
     except Exception as e:
         emit('terminal_error', {'error': f'Failed to start terminal: {str(e)}'})
 
-def read_output(session_id, stdout):
-    """Read output from the subprocess and put it in the queue"""
+def read_output(session_id):
     if session_id not in sessions:
         return
-        
+    ptyproc = sessions[session_id]['proc']
     try:
-        while sessions[session_id]['running']:
-            # Read character by character for better interactivity
-            char = stdout.read(1)
-            if char:
-                # Convert \n to \r\n for proper terminal display
-                if char == '\n':
-                    sessions[session_id]['output_queue'].put('\r\n')
+        import io, fcntl, time
+        fd = ptyproc.fileno()   # master PTY fd
+        
+        # Make the file descriptor non-blocking
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        
+        stream = io.TextIOWrapper(os.fdopen(fd, 'rb', 0),
+                                  encoding='utf-8',
+                                  errors='replace',
+                                  newline='',          # keep \n
+                                  line_buffering=False,
+                                  write_through=True)
+        while sessions[session_id]['running'] and ptyproc.alive():
+            try:
+                # Read smaller chunks to avoid blocking
+                text = stream.read(1)      # read one character at a time
+                if text:
+                    sessions[session_id]['output_queue'].put(text.replace('\n', '\r\n'))
                 else:
-                    sessions[session_id]['output_queue'].put(char)
-            elif sessions[session_id]['process'].poll() is not None:
-                # Process has terminated
-                sessions[session_id]['running'] = False
-                sessions[session_id]['output_queue'].put('\r\n[Process terminated]\r\n')
-                break
+                    # No data available, sleep briefly before checking again
+                    time.sleep(0.001)  # shorter sleep for more responsiveness
+            except (BlockingIOError, OSError):
+                # No data available right now, that's fine
+                time.sleep(0.001)
+        sessions[session_id]['running'] = False
     except Exception as e:
         if session_id in sessions:
             sessions[session_id]['output_queue'].put(f'\r\n[Error reading output: {str(e)}]\r\n')
@@ -141,12 +112,8 @@ def handle_terminal_input(data):
     session_id = request.sid
     if session_id in sessions and sessions[session_id]['running']:
         try:
-            process = sessions[session_id]['process']
-            if process.stdin and not process.stdin.closed:
-                # Convert \r to \n for proper line endings
-                input_data = data['input'].replace('\r', '\n')
-                process.stdin.write(input_data)
-                process.stdin.flush()
+            ptyproc = sessions[session_id]['proc']
+            ptyproc.write(data['input'].encode())
         except Exception as e:
             emit('terminal_error', {'error': f'Failed to send input: {str(e)}'})
 
@@ -159,20 +126,9 @@ def cleanup_session(session_id):
     if session_id in sessions:
         try:
             sessions[session_id]['running'] = False
-            process = sessions[session_id]['process']
-            
-            if process.poll() is None:  # Process is still running
-                if platform.system() == "Windows":
-                    # On Windows, use taskkill to terminate the process tree
-                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], 
-                                 capture_output=True)
-                else:
-                    # On Unix-like systems
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
+            ptyproc = sessions[session_id]['proc']
+            if ptyproc.alive():
+                ptyproc.terminate()
         except Exception as e:
             print(f"Error cleaning up session {session_id}: {e}")
         finally:
