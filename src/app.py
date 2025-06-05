@@ -34,6 +34,7 @@ def handle_start_terminal():
         sessions[session_id] = {
             'proc': ptyproc,
             'output_queue': queue.Queue(),
+            'input_queue': queue.Queue(),  # Add input queue
             'running': True
         }
         threading.Thread(
@@ -43,6 +44,12 @@ def handle_start_terminal():
         ).start()
         threading.Thread(
             target=send_output,
+            args=(session_id,),
+            daemon=True
+        ).start()
+        # Add dedicated input writer thread
+        threading.Thread(
+            target=write_input,
             args=(session_id,),
             daemon=True
         ).start()
@@ -112,10 +119,10 @@ def handle_terminal_input(data):
     session_id = request.sid
     if session_id in sessions and sessions[session_id]['running']:
         try:
-            ptyproc = sessions[session_id]['proc']
-            ptyproc.write(data['input'].encode())
+            # Queue the input instead of writing directly
+            sessions[session_id]['input_queue'].put(data['input'])
         except Exception as e:
-            emit('terminal_error', {'error': f'Failed to send input: {str(e)}'})
+            emit('terminal_error', {'error': f'Failed to queue input: {str(e)}'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -134,6 +141,25 @@ def cleanup_session(session_id):
         finally:
             if session_id in sessions:
                 del sessions[session_id]
+
+def write_input(session_id):
+    """Dedicated thread to handle input writing to PTY"""
+    if session_id not in sessions:
+        return
+    
+    ptyproc = sessions[session_id]['proc']
+    
+    while session_id in sessions and sessions[session_id]['running']:
+        try:
+            # Get input from queue with timeout
+            try:
+                input_data = sessions[session_id]['input_queue'].get(timeout=0.1)
+                ptyproc.write(input_data.encode())
+            except queue.Empty:
+                continue
+        except Exception as e:
+            print(f"Error writing input for session {session_id}: {e}")
+            break
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
